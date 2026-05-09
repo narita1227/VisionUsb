@@ -3,6 +3,8 @@ package com.example.visionusb
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import android.graphics.Bitmap
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,10 +19,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.unit.dp
-import com.example.visionusb.network.ServerConfig
 import com.example.visionusb.network.StatusWebSocketManager
-import com.example.visionusb.ui.camera.MjpegBackground
 
 class MainActivity : ComponentActivity() {
 
@@ -33,11 +34,13 @@ class MainActivity : ComponentActivity() {
             var statusText by remember { mutableStateOf("未接続") }
             var fps by remember { mutableStateOf("-") }
             var latencyMs by remember { mutableStateOf("-") }
+            var latestBitmap by remember { mutableStateOf<Bitmap?>(null) }
 
             LaunchedEffect(Unit) {
                 wsManager.start(
                     onStatus = { status -> statusText = status },
-                    onMetrics = { f, l ->
+                    onFrame = { bitmap, f, l ->
+                        latestBitmap = bitmap
                         fps = f
                         latencyMs = l
                     }
@@ -45,10 +48,13 @@ class MainActivity : ComponentActivity() {
             }
 
             Box(modifier = Modifier.fillMaxSize()) {
-                MjpegBackground(
-                    url = ServerConfig.mjpegUrl(),
-                    modifier = Modifier.fillMaxSize()
-                )
+                latestBitmap?.let { bitmap ->
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = "Stream frame",
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
 
                 Column(
                     modifier = Modifier

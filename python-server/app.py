@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import json
 import logging
 import time
@@ -7,10 +7,8 @@ from dataclasses import dataclass
 import cv2
 import websockets
 from websockets.exceptions import ConnectionClosed
-from aiohttp import web
 
 HOST = "0.0.0.0"
-HTTP_PORT = 8081
 WS_PORT = 8766
 CAMERA_INDEX = 1
 OUTPUT_WIDTH = 640
@@ -35,10 +33,9 @@ class StreamMetrics:
 
 class StreamState:
     def __init__(self):
-        self.latest_jpeg = None
+        self.latest_jpeg: bytes | None = None
         self.lock = asyncio.Lock()
         self.metrics = StreamMetrics()
-        self.status_seq = 0
 
 
 def now_ms() -> int:
@@ -56,44 +53,7 @@ def build_ws_message(msg_type: str, source: str, seq: int, payload: dict) -> str
     return json.dumps(envelope, ensure_ascii=False)
 
 
-async def mjpeg_handler(request):
-    state = request.app["state"]
-
-    response = web.StreamResponse(
-        status=200,
-        reason="OK",
-        headers={
-            "Content-Type": "multipart/x-mixed-replace; boundary=frame",
-            "Cache-Control": "no-cache",
-            "Pragma": "no-cache",
-            "Connection": "close",
-        },
-    )
-    await response.prepare(request)
-
-    try:
-        while True:
-            async with state.lock:
-                jpeg = state.latest_jpeg
-
-            if jpeg is not None:
-                await response.write(b"--frame\r\n")
-                await response.write(b"Content-Type: image/jpeg\r\n")
-                await response.write(f"Content-Length: {len(jpeg)}\r\n\r\n".encode())
-                await response.write(jpeg)
-                await response.write(b"\r\n")
-
-            await asyncio.sleep(0.05)
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        logger.exception("mjpeg_handler failed")
-
-    return response
-
-
 def process_frame(frame):
-    # Baseline処理: 速度優先の軽量加工
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     out = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
     cv2.putText(
@@ -108,7 +68,7 @@ def process_frame(frame):
     return out
 
 
-async def capture_loop(state):
+async def capture_loop(state: StreamState):
     cap = cv2.VideoCapture(CAMERA_INDEX)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, OUTPUT_WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, OUTPUT_HEIGHT)
@@ -159,29 +119,42 @@ async def capture_loop(state):
         logger.info("camera released")
 
 
-async def ws_handler(websocket, state):
+async def ws_handler(websocket, state: StreamState):
     client = getattr(websocket, "remote_address", None)
     logger.info("ws client connected: %s", client)
+    last_sent_seq = -1
+
     try:
         while True:
-            state.status_seq += 1
-            payload = {
-                "fps": state.metrics.fps,
-                "latency_ms": state.metrics.latency_ms,
-                "last_frame_ts_ms": state.metrics.last_frame_ts_ms,
-                "frame_seq": state.metrics.frame_seq,
-            }
-            await websocket.send(
-                build_ws_message(
-                    msg_type="status",
-                    source="python-server",
-                    seq=state.status_seq,
-                    payload=payload,
+            async with state.lock:
+                jpeg = state.latest_jpeg
+                metrics = StreamMetrics(
+                    fps=state.metrics.fps,
+                    latency_ms=state.metrics.latency_ms,
+                    last_frame_ts_ms=state.metrics.last_frame_ts_ms,
+                    frame_seq=state.metrics.frame_seq,
                 )
-            )
-            await asyncio.sleep(0.2)
+
+            if jpeg is not None and metrics.frame_seq != last_sent_seq:
+                payload = {
+                    "fps": metrics.fps,
+                    "latency_ms": metrics.latency_ms,
+                    "last_frame_ts_ms": metrics.last_frame_ts_ms,
+                    "frame_seq": metrics.frame_seq,
+                }
+                await websocket.send(
+                    build_ws_message(
+                        msg_type="frame_meta",
+                        source="python-server",
+                        seq=metrics.frame_seq,
+                        payload=payload,
+                    )
+                )
+                await websocket.send(jpeg)
+                last_sent_seq = metrics.frame_seq
+
+            await asyncio.sleep(0.01)
     except ConnectionClosed:
-        # Normal close or network interruption: no stacktrace needed.
         logger.info("ws client disconnected: %s", client)
         return
     except Exception:
@@ -189,20 +162,7 @@ async def ws_handler(websocket, state):
         return
 
 
-async def start_http_server(state):
-    app = web.Application()
-    app["state"] = state
-    app.router.add_get("/mjpeg", mjpeg_handler)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-
-    site = web.TCPSite(runner, HOST, HTTP_PORT)
-    await site.start()
-    return runner
-
-
-async def start_ws_server(state):
+async def start_ws_server(state: StreamState):
     return await websockets.serve(
         lambda websocket: ws_handler(websocket, state),
         HOST,
@@ -212,12 +172,8 @@ async def start_ws_server(state):
 
 async def main():
     state = StreamState()
-    await start_http_server(state)
     await start_ws_server(state)
-
-    logger.info("MJPEG: http://%s:%d/mjpeg", HOST, HTTP_PORT)
-    logger.info("WS: ws://%s:%d/ws/status", HOST, WS_PORT)
-
+    logger.info("WS video stream: ws://%s:%d/ws/video", HOST, WS_PORT)
     await capture_loop(state)
 
 

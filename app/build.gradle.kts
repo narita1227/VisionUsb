@@ -57,7 +57,6 @@ android {
             "SERVER_HOST_OVERRIDE",
             asBuildConfigString(configValue("visionusb.server.host.override", ""))
         )
-        buildConfigField("int", "SERVER_HTTP_PORT", configValue("visionusb.server.httpPort", "8081"))
         buildConfigField("int", "SERVER_WS_PORT", configValue("visionusb.server.wsPort", "8766"))
     }
 

@@ -4,8 +4,8 @@ USB camera baseline validation project.
 
 ## Structure
 
-- `app/`: Android client (MJPEG display + WS metrics)
-- `python-server/`: Python server (USB input + lightweight processing)
+- `app/`: Android client (WebSocket binary frame display + metrics)
+- `python-server/`: Python server (USB input + lightweight processing + WebSocket streaming)
 
 Related standalone projects (sibling directories):
 - `../VisionCameraX`: CameraX <-> Python round-trip
@@ -29,5 +29,4 @@ python app.py
 
 ## Endpoints
 
-- MJPEG: `http://<PC_LAN_IP>:8081/mjpeg`
-- WS status: `ws://<PC_LAN_IP>:8766/ws/status`
+- WS video: `ws://<PC_LAN_IP>:8766/ws/video` (text metadata + binary JPEG frames)

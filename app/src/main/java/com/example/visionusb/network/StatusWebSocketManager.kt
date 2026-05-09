@@ -1,5 +1,7 @@
 package com.example.visionusb.network
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -8,7 +10,9 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import okio.ByteString
 import org.json.JSONObject
+import java.util.ArrayDeque
 import java.util.concurrent.atomic.AtomicBoolean
 
 class StatusWebSocketManager {
@@ -23,6 +27,8 @@ class StatusWebSocketManager {
     private val running = AtomicBoolean(false)
     private val connected = AtomicBoolean(false)
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val pendingMeta = ArrayDeque<Pair<String, String>>()
+    private val pendingMetaLock = Any()
 
     @Volatile
     private var currentWebSocket: WebSocket? = null
@@ -32,7 +38,7 @@ class StatusWebSocketManager {
 
     fun start(
         onStatus: (String) -> Unit,
-        onMetrics: (fps: String, latencyMs: String) -> Unit
+        onFrame: (bitmap: Bitmap, fps: String, latencyMs: String) -> Unit
     ) {
         if (running.getAndSet(true)) return
 
@@ -64,24 +70,55 @@ class StatusWebSocketManager {
                         override fun onMessage(webSocket: WebSocket, text: String) {
                             try {
                                 val json = JSONObject(text)
-                                val messageType = json.optString("type", "")
-                                val rootPayload = json.optJSONObject("payload")
-                                val payload = if (messageType == "status" && rootPayload != null) {
-                                    rootPayload
-                                } else {
-                                    json
-                                }
+                                when (json.optString("type", "")) {
+                                    "frame_meta" -> {
+                                        val payload = json.optJSONObject("payload") ?: return
+                                        val fps = String.format("%.1f", payload.optDouble("fps", 0.0))
+                                        val latency = String.format("%.1f", payload.optDouble("latency_ms", 0.0))
+                                        synchronized(pendingMetaLock) {
+                                            pendingMeta.addLast(fps to latency)
+                                            if (pendingMeta.size > 8) {
+                                                pendingMeta.removeFirst()
+                                            }
+                                        }
+                                    }
 
-                                val fps = payload.optDouble("fps", 0.0)
-                                val latency = payload.optDouble("latency_ms", 0.0)
-                                mainHandler.post {
-                                    onMetrics(
-                                        String.format("%.1f", fps),
-                                        String.format("%.1f", latency)
-                                    )
+                                    // Legacy status-only path.
+                                    "status" -> {
+                                        val payload = json.optJSONObject("payload") ?: return
+                                        val fps = String.format("%.1f", payload.optDouble("fps", 0.0))
+                                        val latency = String.format("%.1f", payload.optDouble("latency_ms", 0.0))
+                                        synchronized(pendingMetaLock) {
+                                            pendingMeta.addLast(fps to latency)
+                                            if (pendingMeta.size > 8) {
+                                                pendingMeta.removeFirst()
+                                            }
+                                        }
+                                    }
                                 }
                             } catch (e: Exception) {
-                                Log.w(TAG, "Failed to parse status message", e)
+                                Log.w(TAG, "Failed to parse ws message", e)
+                            }
+                        }
+
+                        override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                            try {
+                                val raw = bytes.toByteArray()
+                                val bitmap = BitmapFactory.decodeByteArray(raw, 0, raw.size) ?: return
+
+                                val (fps, latency) = synchronized(pendingMetaLock) {
+                                    if (pendingMeta.isEmpty()) {
+                                        "-" to "-"
+                                    } else {
+                                        pendingMeta.removeFirst()
+                                    }
+                                }
+
+                                mainHandler.post {
+                                    onFrame(bitmap, fps, latency)
+                                }
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Failed to decode binary frame", e)
                             }
                         }
 

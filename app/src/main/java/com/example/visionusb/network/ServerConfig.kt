@@ -29,7 +29,5 @@ object ServerConfig {
         }
     }
 
-    fun wsUrl(): String = "ws://${selectedHost()}:${BuildConfig.SERVER_WS_PORT}/ws/status"
-
-    fun mjpegUrl(): String = "http://${selectedHost()}:${BuildConfig.SERVER_HTTP_PORT}/mjpeg"
+    fun wsUrl(): String = "ws://${selectedHost()}:${BuildConfig.SERVER_WS_PORT}/ws/video"
 }
