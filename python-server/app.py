@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import time
 from dataclasses import dataclass
 
@@ -16,6 +17,12 @@ OUTPUT_WIDTH = 640
 OUTPUT_HEIGHT = 480
 JPEG_QUALITY = 70
 FRAME_INTERVAL_SEC = 0.03
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger("visionusb_server")
 
 
 @dataclass
@@ -80,7 +87,7 @@ async def mjpeg_handler(request):
     except asyncio.CancelledError:
         raise
     except Exception:
-        pass
+        logger.exception("mjpeg_handler failed")
 
     return response
 
@@ -109,6 +116,8 @@ async def capture_loop(state):
     if not cap.isOpened():
         raise RuntimeError(f"camera open failed index={CAMERA_INDEX}")
 
+    logger.info("camera opened index=%d", CAMERA_INDEX)
+
     frame_count = 0
     last_fps_at = time.time()
 
@@ -117,6 +126,7 @@ async def capture_loop(state):
             t0 = time.time()
             ok, frame = cap.read()
             if not ok:
+                logger.warning("camera read failed")
                 await asyncio.sleep(0.05)
                 continue
 
@@ -125,6 +135,7 @@ async def capture_loop(state):
                 ".jpg", processed, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
             )
             if not encode_ok:
+                logger.warning("cv2.imencode returned false")
                 await asyncio.sleep(FRAME_INTERVAL_SEC)
                 continue
 
@@ -145,9 +156,12 @@ async def capture_loop(state):
             await asyncio.sleep(FRAME_INTERVAL_SEC)
     finally:
         cap.release()
+        logger.info("camera released")
 
 
 async def ws_handler(websocket, state):
+    client = getattr(websocket, "remote_address", None)
+    logger.info("ws client connected: %s", client)
     try:
         while True:
             state.status_seq += 1
@@ -168,8 +182,10 @@ async def ws_handler(websocket, state):
             await asyncio.sleep(0.2)
     except ConnectionClosed:
         # Normal close or network interruption: no stacktrace needed.
+        logger.info("ws client disconnected: %s", client)
         return
     except Exception:
+        logger.exception("ws_handler failed for client=%s", client)
         return
 
 
@@ -199,8 +215,8 @@ async def main():
     await start_http_server(state)
     await start_ws_server(state)
 
-    print(f"MJPEG: http://{HOST}:{HTTP_PORT}/mjpeg")
-    print(f"WS: ws://{HOST}:{WS_PORT}/ws/status")
+    logger.info("MJPEG: http://%s:%d/mjpeg", HOST, HTTP_PORT)
+    logger.info("WS: ws://%s:%d/ws/status", HOST, WS_PORT)
 
     await capture_loop(state)
 
